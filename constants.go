@@ -1,0 +1,3 @@
+package crons
+
+const empty = ""
