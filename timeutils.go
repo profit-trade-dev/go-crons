@@ -51,12 +51,3 @@ func nextTimeFromHHMMInLoc(hhmm string, loc *time.Location) time.Time {
 	}
 	return tt
 }
-
-// Backward-compat helpers (preserved but now implemented via location-aware helpers)
-func getCurrentIndianTime() time.Time { return nowIn(defaultLocation) }
-func getIndianTimeFromTiming(t string) time.Time {
-	return timeFromHHMMInLoc(t, nowIn(defaultLocation), defaultLocation)
-}
-func getNextIndianTimeFromTiming(t string) time.Time {
-	return nextTimeFromHHMMInLoc(t, defaultLocation)
-}
