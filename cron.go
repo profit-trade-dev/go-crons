@@ -28,6 +28,9 @@ type Cron struct {
 	isRunning bool
 
 	mu sync.Mutex
+
+	// location controls timezone for scheduling and comparisons
+	location *time.Location
 }
 
 var crons []*Cron
@@ -40,6 +43,7 @@ func New() *Cron {
 	c := &Cron{
 		ch:           make(chan struct{}, 2),
 		errThreshold: -1,
+		location:     defaultLocation,
 	}
 	crons = append(crons, c)
 	return c
@@ -126,6 +130,19 @@ func (c *Cron) WithLogger(l Logger) *Cron {
 	return c
 }
 
+// WithLocation sets the timezone location for this cron.
+func (c *Cron) WithLocation(loc *time.Location) *Cron {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.isRunning {
+		return c
+	}
+	if loc != nil {
+		c.location = loc
+	}
+	return c
+}
+
 // Start is used to start the cron run.
 func (c *Cron) Start(ctx context.Context, f RunFunction) {
 	c.mu.Lock()
@@ -162,8 +179,8 @@ func (c *Cron) runAt(ctx context.Context, f RunFunction) {
 			infoLog(ctx, c, "exiting cron run")
 			return
 		default:
-			time.Sleep(getNextIndianTimeFromTiming(c.at).
-				Sub(getCurrentIndianTime()))
+			time.Sleep(nextTimeFromHHMMInLoc(c.at, c.location).
+				Sub(nowIn(c.location)))
 			debugLog(ctx, c, "executing cron run")
 			err := f(ctx)
 			if err != nil {
@@ -186,14 +203,13 @@ func (c *Cron) runEvery(ctx context.Context, f RunFunction) {
 	var t *time.Ticker
 	defer stopTicker(t)
 	for {
-		time.Sleep(getSleepDurationForRun(c.startsAt, c.endsAt, c.every))
+		time.Sleep(getSleepDurationForRun(c.startsAt, c.endsAt, c.every, c.location))
 		t = time.NewTicker(c.every)
 		for {
 			debugLog(ctx, c, "executing cron run")
-			if (c.endsAt != empty && getCurrentIndianTime().
-				After(getIndianTimeFromTiming(c.endsAt))) ||
-				(c.startsAt != empty && getCurrentIndianTime().
-					Before(getIndianTimeFromTiming(c.startsAt))) {
+			now := nowIn(c.location)
+			if (c.endsAt != empty && now.After(timeFromHHMMInLoc(c.endsAt, now, c.location))) ||
+				(c.startsAt != empty && now.Before(timeFromHHMMInLoc(c.startsAt, now, c.location))) {
 				break
 			}
 			err := f(ctx)
@@ -230,15 +246,17 @@ func stopTicker(t *time.Ticker) {
 	}
 }
 
-func getSleepDurationForRun(startsAt, endsAt string, every time.Duration) time.Duration {
-	// case 1 - ct <= st < et
-	// case 2 - st <= ct <= et
-	// case 3 - st < et <= ct
-	ct := getCurrentIndianTime()
-	st := getIndianTimeFromTiming(startsAt)
-	et := getIndianTimeFromTiming(endsAt)
+// UTC convenience methods
+func (c *Cron) AtUTC(t string) *Cron       { return c.WithLocation(time.UTC).At(t) }
+func (c *Cron) StartsAtUTC(s string) *Cron { return c.WithLocation(time.UTC).StartsAt(s) }
+func (c *Cron) EndsAtUTC(s string) *Cron   { return c.WithLocation(time.UTC).EndsAt(s) }
+
+func getSleepDurationForRun(startsAt, endsAt string, every time.Duration, loc *time.Location) time.Duration {
+	ct := nowIn(loc)
+	st := timeFromHHMMInLoc(startsAt, ct, loc)
+	et := timeFromHHMMInLoc(endsAt, ct, loc)
 	if ct.Equal(et) {
-		et = ct.Add(time.Hour * 24 * 365) //+1 year
+		et = ct.Add(24 * time.Hour * 365)
 	}
 	if ct.Before(st) || ct.Equal(st) {
 		return st.Sub(ct)
@@ -249,5 +267,5 @@ func getSleepDurationForRun(startsAt, endsAt string, every time.Duration) time.D
 			return d
 		}
 	}
-	return st.Add(time.Hour * 24).Sub(ct)
+	return st.Add(24 * time.Hour).Sub(ct)
 }
