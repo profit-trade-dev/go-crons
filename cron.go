@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // RunFunction is used to run the given function with cron.
@@ -35,6 +37,9 @@ type Cron struct {
 
 var crons []*Cron
 var cronsMu sync.Mutex
+
+// runIDKey is the unique context key used to store the cron run ID.
+const runIDKey = "cronTraceId"
 
 // New is used to create a new cron instance.
 func New() *Cron {
@@ -181,11 +186,12 @@ func (c *Cron) runAt(ctx context.Context, f RunFunction) {
 		default:
 			time.Sleep(nextTimeFromHHMMInLoc(c.at, c.location).
 				Sub(nowIn(c.location)))
-			debugLog(ctx, c, "executing cron run")
-			err := f(ctx)
+			runCtx := withRunID(ctx)
+			debugLog(runCtx, c, "executing cron run")
+			err := f(runCtx)
 			if err != nil {
 				errCnt++
-				errorLog(ctx, c, err, "error executing cron run")
+				errorLog(runCtx, c, err, "error executing cron run")
 				if c.errThreshold >= 0 && errCnt > c.errThreshold {
 					os.Exit(1)
 					return
@@ -206,16 +212,17 @@ func (c *Cron) runEvery(ctx context.Context, f RunFunction) {
 		time.Sleep(getSleepDurationForRun(c.startsAt, c.endsAt, c.every, c.location))
 		t = time.NewTicker(c.every)
 		for {
-			debugLog(ctx, c, "executing cron run")
+			runCtx := withRunID(ctx)
+			debugLog(runCtx, c, "executing cron run")
 			now := nowIn(c.location)
 			if (c.endsAt != empty && now.After(timeFromHHMMInLoc(c.endsAt, now, c.location))) ||
 				(c.startsAt != empty && now.Before(timeFromHHMMInLoc(c.startsAt, now, c.location))) {
 				break
 			}
-			err := f(ctx)
+			err := f(runCtx)
 			if err != nil {
 				errCnt++
-				errorLog(ctx, c, err, "error executing cron run")
+				errorLog(runCtx, c, err, "error executing cron run")
 				if c.errThreshold >= 0 && errCnt > c.errThreshold {
 					os.Exit(1)
 					return
@@ -268,4 +275,10 @@ func getSleepDurationForRun(startsAt, endsAt string, every time.Duration, loc *t
 		}
 	}
 	return st.Add(24 * time.Hour).Sub(ct)
+}
+
+func newRunID() string { return uuid.NewString() }
+
+func withRunID(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runIDKey, newRunID())
 }
